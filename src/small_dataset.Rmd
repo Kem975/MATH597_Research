@@ -1,0 +1,113 @@
+---
+title: "Small Dataset"
+output: html_notebook
+---
+
+```{r}
+library(keras)
+library(pls)
+```
+
+Here is a function to evaluates our models
+
+```{r}
+modelmetrics = function(y,yhat) {
+  ssreg = sum((y-yhat)^2)
+  sstot = sum((y-mean(y))^2)
+  r2 = 1 - ssreg/sstot
+  print(sprintf("R2 = %.3f",r2))
+}
+```
+
+We get the data
+
+```{r}
+df.x = read.csv("data/X_small.csv")
+df.y = read.csv("data/Y_small.csv")
+
+df.y$date <- c()
+df.x$date <- c()
+
+df.data <- cbind(df.x, df.y)
+```
+
+We plot some vizualisation of the Dataset 
+
+```{r}
+par(mfrow=c(2,3))
+for (i in names(df.x)){
+  plot(df.data[,i], df.data$xs_return, xlab=i)
+}
+```
+
+First we try a linear regression.
+
+```{r}
+fit.lm <- lm(xs_return~., data=df.data)
+
+pred.lm <- predict(fit.lm, newdata = subset(df.data, select = -c(xs_return)) )
+
+plot(df.data$xs_return,pred.lm, pch=21, bg="lightblue"); abline(a=0,b=1)
+modelmetrics(df.data$xs_return, pred.lm)
+```
+The result are really bad. Thus, we need to reduce the bias in our model and increase the variance.
+We will perform a PLS+NN model and then compare it to a classic NN model.
+
+Now we do the PLS
+
+```{r}
+plsr_fit <- plsr(xs_return~., data=df.data, scale=T, validation="CV")
+summary(plsr_fit)
+
+plsr_5 <- plsr(formula = xs_return~., ncomp = 5, data=df.data, scale = T)
+PLS_Score <- scores(plsr_5)
+```
+
+When can keep 5 components with 85% of variance explained.
+We create the Neural Network.
+
+```{r}
+model.PLS <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = 5) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1) 
+summary(model.PLS)
+```
+
+And we use the PLS as input to the NN
+
+```{r}
+model.PLS %>% compile( loss = "mse",optimizer = "RMSprop" )
+history.PLS = model.PLS %>% fit( x = as.matrix(scale(PLS_Score)), y = df.data$xs_return, verbose = 0, 
+                        epochs=1000, validation_data = list(as.matrix(scale(PLS_Score)), df.data$xs_return) )
+yhat.PLS = model.PLS %>% predict( as.matrix(scale(PLS_Score)) )
+plot(history.PLS)
+modelmetrics(df.data$xs_return, yhat.PLS)
+```
+The performance is bad with a R² close to 0. We can compare this result to classic NN regression without the PLS.
+
+
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = 6) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1) 
+summary(model)
+
+x_train <- as.matrix(df.x)
+y_train <- as.matrix(df.y)
+
+model %>% compile(loss = "mse",optimizer = "RMSprop")
+history = model %>% fit( x = x_train, y = y_train, verbose = 0, 
+                        epochs=1000, validation_data = list(x_train,y_train) )
+                        
+yhat = model %>% predict( x_train )
+plot(history)
+modelmetrics(y_train, yhat)
+```
+
+Even, without the PLS the R² statistic is really low.
+
+Since we do not obtain a good result with such a high variance model (that should totally overfit the observations), we can suggest that we lack of relevant features to predict xs_return. 
