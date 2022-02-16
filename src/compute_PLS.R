@@ -15,6 +15,8 @@ dates <- na.omit(dates)
 
 for (i in 1:(length(dates)-1)){
   
+  
+  
   #### Get the Data
   train = subset(df.data, date==dates[i])
   test = subset(df.data, date==dates[i+1])
@@ -57,6 +59,8 @@ for (i in 1:(length(dates)-1)){
   
   x_test <- as.matrix(PLS_Score.test) # Had a rescale
   y_test <- test$xs_return
+  
+  
 
   write.csv( x_train, sprintf("%s_x_train.csv",dates[i]) )
   write.csv( x_test, sprintf("%s_x_test.csv",dates[i]) )
