@@ -18,7 +18,7 @@ The data folder contains:
 ## Source Code
 The conversion of the Fundamental Factors dataset to a PLS is done in the _src/compute_PLS.R_ script where we use the "pls" R library. In this script, we specify a percentage of variance explained that we want to obtain. This variance explained value is obtained by incrementing the number of components of the PLS.
 
-The main code is situated in _src/PLS_DNN_vs_OLS.ipynb_, where we compare the performances of:
+The main code is situated in _src/main.ipynb_, where we compare the performances of:
 - Deep Neural Network fed by PLS of the Fundamental Factors
 - Deep Neural Network fed directly by the Fundamental Factors
 - OLS
