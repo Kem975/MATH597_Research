@@ -1,0 +1,381 @@
+---
+title: "Full Dataset"
+output: html_notebook
+---
+
+```{r}
+library(keras)
+library(pls)
+library(corrplot)
+library(ggplot2)
+```
+R² statistics calculation function
+
+```{r}
+modelmetrics = function(y,yhat) {
+  ssreg = sum((y-yhat)^2)
+  sstot = sum((y-mean(y))^2)
+  r2 = 1 - ssreg/sstot
+  #print(sprintf("R2 = %.3f",r2))
+  return(r2)
+}
+```
+
+Get the data
+
+```{r}
+df.x = read.csv("data/X.csv")
+df.y = read.csv("data/Y.csv")
+
+#df.y$date <- c()
+df.x$date <- c()
+
+df.data <- cbind(df.x, df.y)
+```
+
+Get an array with the unique dates
+
+```{r}
+dates <- unique(as.Date(df.data$date))
+dates <- na.omit(dates)
+```
+
+First do a linear regression
+
+```{r}
+r2.vect <- c()
+
+for (i in 1:(length(dates)-1)){
+  train = subset(df.data, date==dates[i])
+  test = subset(df.data, date==dates[i+1])
+  
+  train$date <- c()
+  test$date <- c()
+  
+  print(dim(train))
+  print(dim(test))
+  
+  fit.lm <- lm(xs_return~., data=train)
+  pred.lm <- predict(fit.lm, newdata = subset(test, select = -c(xs_return)))
+  
+  r2.iter <- modelmetrics(test$xs_return, pred.lm)
+  
+  r2.vect<- append(r2.vect, r2.iter, after = length(r2.vect))
+  
+  if(i==10){
+    break
+  }
+}
+
+```
+
+Let's see the correlation, the "rank-deficience" may come from a perfect correlation between 2 predictors.
+
+```{r}
+res <- cor(train)
+corrplot(res, type = "upper", method = 'color')
+```
+
+PLS + NN
+
+```{r}
+r2.vect_is_tr <- c()
+r2.vect_oos_tr <- c()
+
+
+for (i in 1:(length(dates)-1)){
+  
+  #### Get the Data
+  train = subset(df.data, date==dates[i])
+  test = subset(df.data, date==dates[i+1])
+  
+  train$date <- c()
+  test$date <- c()
+  
+  for (k in 1:49){
+    var.col <- var(train[,k])
+    mean.col <- mean(train[,k])
+    
+    if (var.col != 0){
+      train[,k] <- (train[,k]-mean.col) / sqrt(var.col)
+      test[,k] <- (test[,k]-mean.col) / sqrt(var.col) 
+    }
+  }
+  
+  #### Calculate the number of components
+  plsr_fit <- plsr(xs_return~., data=train, rescale = F, validation="CV")
+  var.explained = 0
+  comp.num = 0
+  
+  while( var.explained<0.8 ){
+    comp.num <- comp.num + 1
+    var.explained <- as.numeric((sum(plsr_fit$Xvar[1:comp.num]))/plsr_fit$Xtotvar)
+  }
+  print(comp.num)
+  
+  
+  #### Perform the PLS on train and test
+  plsr.input <- plsr(formula = xs_return~., ncomp = comp.num, data=train, rescale = F)
+  PLS_Score.input <- scores(plsr.input)
+  
+  plsr.test <- plsr(formula = xs_return~., ncomp = comp.num, data=test, rescale = F)
+  PLS_Score.test <- scores(plsr.test)
+  
+
+  #### Create the model
+  model.PLS <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = comp.num) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1) 
+  summary(model.PLS)
+  
+  
+  #### Adjust the data
+  x_train <- as.matrix(PLS_Score.input) # Had a rescale
+  y_train <- train$xs_return
+  
+  x_test <- as.matrix(PLS_Score.test) # Had a rescale
+  y_test <- test$xs_return
+  
+  
+  #### Train
+  model.PLS %>% compile(loss = "mse", optimizer = "RMSprop")
+  history = model.PLS %>% fit( x = x_train, y = y_train, verbose = 2, 
+                               epochs=1000, validation_data = list(x_test, y_test),
+                               callbacks = list(callback_early_stopping(monitor = "loss", 
+                                                                        patience = 30, 
+                                                                        min_delta = 1e-6,
+                                                                        restore_best_weights = TRUE)))
+  
+  
+  #### Test
+  yhat_is = model.PLS %>% predict( x_train )
+  yhat_oos = model.PLS %>% predict( x_test )
+  
+  
+  #### Evaluate
+  r2.iter_is <- modelmetrics(y_train, yhat_is)
+  r2.iter_oos <- modelmetrics(y_test, yhat_oos)
+  
+  
+  #### Save Values
+  r2.vect_is_tr <- append(r2.vect_is_tr, r2.iter_is, after = length(r2.vect_is_tr))
+  r2.vect_oos_tr <- append(r2.vect_oos_tr, r2.iter_oos, after = length(r2.vect_oos_tr))
+  
+  
+  #### Save the model
+  save_model_hdf5(model.PLS, sprintf("models/manually_rescaled/model_%s_%i",dates[i],round(r2.iter_oos*1000)))
+  
+  
+  #### Stop condition
+  if(i==10){
+    break
+  }
+}
+```
+
+
+Now that the models are saved we are going to load them for the NN + PLS
+
+
+```{r}
+r2.vect_is <- c()
+r2.vect_oos <- c()
+
+mae.vect_is <- c()
+mae.vect_oos <- c()
+
+models <- list.files(path="models/1000_epochs")
+
+for (m in 1:(length(models))){
+  
+  #### Get the Data
+  train = subset(df.data, date==dates[m])
+  test = subset(df.data, date==dates[m+1])
+  
+  train$date <- c()
+  test$date <- c()
+  
+  for (k in 1:49){
+    var.col <- var(train[,k])
+    mean.col <- mean(train[,k])
+    
+    print(var.col)
+    
+    train[,k] <- (train[,k]-mean.col) / sqrt(var.col)
+    test[,k] <- (test[,k]-mean.col) / sqrt(var.col)
+  }
+
+  
+  #### Calculate the number of components
+  plsr_fit <- plsr(xs_return~., data=train, rescale = F, validation="CV")
+  var.explained = 0
+  comp.num = 0
+  
+  while(var.explained<0.8){
+    comp.num <- comp.num + 1
+    var.explained <- as.numeric((sum(plsr_fit$Xvar[1:comp.num]))/plsr_fit$Xtotvar)
+  }
+  print(comp.num)
+  
+  
+  #### Perform the PLS on train and test
+  plsr.input <- plsr(formula = xs_return~., ncomp = comp.num, data=train, rescale = F)
+  PLS_Score.input <- scores(plsr.input)
+  
+  plsr.test <- plsr(formula = xs_return~., ncomp = comp.num, data=test, rescale = F)
+  PLS_Score.test <- scores(plsr.test)
+  
+  model.loaded <- load_model_hdf5(sprintf("models/1000_epochs/%s", models[m]))
+  
+    
+  #### Adjust the data
+  x_train <- as.matrix(PLS_Score.input) # Had a rescale here too
+  y_train <- train$xs_return
+  
+  x_test <- as.matrix(PLS_Score.test) # Had a rescale here too
+  y_test <- test$xs_return
+  
+  
+  #### Test
+  yhat_is = model.loaded %>% predict( x_train )
+  yhat_oos = model.loaded %>% predict( x_test )
+  
+  
+  #### Evaluate
+  r2.iter_is <- modelmetrics(y_train, yhat_is)
+  r2.iter_oos <- modelmetrics(y_test, yhat_oos)
+  
+  mae.iter_is <- sum(abs(y_train-yhat_is))
+  mae.iter_oos <- sum(abs(y_test-yhat_oos))
+  
+  
+  #### Save Values
+  r2.vect_is <- append(r2.vect_is, r2.iter_is, after = length(r2.vect_is))
+  r2.vect_oos <- append(r2.vect_oos, r2.iter_oos, after = length(r2.vect_oos))
+  
+  mae.vect_is <- append(mae.vect_is, mae.iter_is, after = length(mae.vect_is))
+  mae.vect_oos <- append(mae.vect_oos, mae.iter_oos, after = length(mae.vect_oos))
+}
+
+```
+
+
+```{r}
+x <- 1:length(r2.vect_is)
+df.toplot_r2 <- data.frame(x, r2.vect_is, r2.vect_oos)
+ggplot(df.toplot_r2, aes(x)) + 
+  geom_line(aes(y=r2.vect_is), size=0.8, colour="red") + 
+  geom_line(aes(y=r2.vect_oos), size=0.8, colour="green") +
+  ylim(-1, 1) +
+  labs(y = "R2") 
+
+```
+```{r}
+x <- 1:length(mae.vect_is)
+df.toplot_mae <- data.frame(x, mae.vect_is, mae.vect_oos)
+ggplot(df.toplot_mae, aes(x)) + 
+  geom_line(aes(y=mae.vect_is), size=0.8, colour="red") + 
+  geom_line(aes(y=mae.vect_oos), size=0.8, colour="green") +
+  labs(y = "MAE")
+```
+Now without the PLS
+
+```{r}
+
+r2.vect_is_normal <- c()
+r2.vect_oos_normal <- c()
+
+mae.vect_is_normal <- c()
+mae.vect_oos_normal <- c()
+
+for (i in 1:(length(dates)-1)){
+  
+  print(sprintf("%i / %i", i, (length(dates)-1)))
+  
+  #### Get the Data
+  train = subset(df.data, date==dates[i])
+  test = subset(df.data, date==dates[i+1])
+  
+  train$date <- c()
+  test$date <- c()
+  
+  
+  #### Create the model 
+  model.normal <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = 49) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1) 
+  #summary(model.normal)
+  
+  
+  #### Adjust the data
+  x_train <-  as.matrix(subset(train, select = -c(xs_return))) 
+  y_train <- train$xs_return
+  
+  x_test <-  as.matrix(subset(test, select = -c(xs_return))) 
+  y_test <- test$xs_return
+  
+  
+  #### Train
+  model.normal %>% compile(loss = "mse", optimizer = "RMSprop")
+  history = model.normal %>% fit( x = x_train, y = y_train, verbose = 0, 
+                               epochs=1000, validation_data = list(x_test, y_test),
+                               callbacks = list(callback_early_stopping(monitor = "loss", 
+                                                                        patience = 30, 
+                                                                        min_delta = 1e-6,
+                                                                        restore_best_weights = TRUE)))
+  
+  
+  #### Test
+  yhat_is = model.normal %>% predict( x_train )
+  yhat_oos = model.normal %>% predict( x_test )
+  
+  
+  #### Evaluate
+  r2.iter_is_normal <- modelmetrics(y_train, yhat_is)
+  r2.iter_oos_normal <- modelmetrics(y_test, yhat_oos)
+  
+  mae.iter_is_normal <- sum(abs(yhat_is-y_train))
+  mae.iter_oos_normal <- sum(abs(yhat_oos-y_test))
+  
+  
+  #### Save Values
+  r2.vect_is_normal <- append(r2.vect_is_normal, r2.iter_is_normal, after = length(r2.vect_is_normal))
+  r2.vect_oos_normal <- append(r2.vect_oos_normal, r2.iter_oos_normal, after = length(r2.vect_oos_normal))
+  
+  mae.vect_is_normal <- append(mae.vect_is_normal, mae.iter_is_normal, after = length(mae.vect_is_normal))
+  mae.vect_oos_normal <- append(mae.vect_oos_normal, mae.iter_oos_normal, after = length(mae.vect_oos_normal))
+  
+  #### Save the model
+  save_model_hdf5(model.normal, sprintf("models/without_PLS/model_%s_%i",dates[i],round(r2.iter_oos_normal*1000)))
+  
+  
+  #### Stop condition
+  #if(i==10){
+  #  break
+  #}
+}
+```
+
+```{r}
+x <- 1:length(r2.vect_is_normal)
+df.toplot_r2 <- data.frame(x, r2.vect_is_normal, r2.vect_oos_normal)
+ggplot(df.toplot_r2, aes(x)) + 
+  geom_line(aes(y=r2.vect_is_normal), size=0.8, colour="red") + 
+  geom_line(aes(y=r2.vect_oos_normal), size=0.8, colour="green") +
+  ylim(-1, 1) +
+  labs(y = "R2") 
+```
+
+```{r}
+x <- 1:length(mae.vect_is_normal)
+df.toplot_mae <- data.frame(x, mae.vect_is_normal, mae.vect_oos_normal)
+ggplot(df.toplot_mae, aes(x)) + 
+  geom_line(aes(y=mae.vect_is_normal), size=0.8, colour="red") + 
+  geom_line(aes(y=mae.vect_oos_normal), size=0.8, colour="green") +
+  labs(y = "MAE")
+```
+
