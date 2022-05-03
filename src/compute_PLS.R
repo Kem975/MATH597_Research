@@ -1,8 +1,8 @@
 library(pls)
 
 #Get the data
-df.x = read.csv("data/X.csv")
-df.y = read.csv("data/Y.csv")
+df.x = read.csv("../../data/X_untouched.csv")
+df.y = read.csv("../../data/Y_untouched.csv")
 
 df.x$date <- c()
 
@@ -13,7 +13,7 @@ df.data <- cbind(df.x, df.y)
 dates <- unique(as.Date(df.data$date))
 dates <- na.omit(dates)
 
-for(v in c(50,70,80,90,95,99)){
+for(v in c(50,80,95)){
   
   for (i in 1:(length(dates)-1)){
     
@@ -49,9 +49,11 @@ for(v in c(50,70,80,90,95,99)){
     #### Perform the PLS on train and test
     plsr.input <- plsr(formula = xs_return~., ncomp = comp.num, data=train, rescale = F)
     PLS_Score.input <- scores(plsr.input)
+    P.train <- as.matrix(loadings(plsr.input))
     
     plsr.test <- plsr(formula = xs_return~., ncomp = comp.num, data=test, rescale = F)
     PLS_Score.test <- scores(plsr.test)
+    P.test <- as.matrix(loadings(plsr.test))
     
     #### Adjust the data
     x_train <- as.matrix(PLS_Score.input) # Had a rescale
@@ -60,12 +62,13 @@ for(v in c(50,70,80,90,95,99)){
     x_test <- as.matrix(PLS_Score.test) # Had a rescale
     y_test <- test$xs_return
     
-    
+    write.csv( P.train, sprintf("../data/PLS_data/%i/train_loadings/%s.csv",v,dates[i]) )
+    write.csv( P.test, sprintf("../data/PLS_data/%i/test_loadings/%s.csv",v,dates[i]) )
   
-    write.csv( x_train, sprintf("data/PLS_data/%i/x_train/%s.csv",v,dates[i]) )
-    write.csv( x_test, sprintf("data/PLS_data/%i/x_test/%s.csv",v,dates[i]) )
-    write.csv( y_train, sprintf("data/PLS_data/%i/y_train/%s.csv",v,dates[i]) )
-    write.csv( y_test, sprintf("data/PLS_data/%i/y_test/%s.csv",v,dates[i]) )
+    #write.csv( x_train, sprintf("data/PLS_data/%i/x_train/%s.csv",v,dates[i]) )
+    #write.csv( x_test, sprintf("data/PLS_data/%i/x_test/%s.csv",v,dates[i]) )
+    #write.csv( y_train, sprintf("data/PLS_data/%i/y_train/%s.csv",v,dates[i]) )
+    #write.csv( y_test, sprintf("data/PLS_data/%i/y_test/%s.csv",v,dates[i]) )
     
     }
 
